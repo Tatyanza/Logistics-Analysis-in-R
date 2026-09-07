@@ -1,0 +1,218 @@
+---
+title: "Logistics and Inventory Analysis Report"
+author: "Tatiana Ilunga"
+date: "2026-08-04"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# Load our main libraries
+library(dplyr)
+library(ggplot2)
+
+# Import the logistics dataset
+logistics <- read.csv("data/logistics_dataset.csv")
+```
+
+# Section 1: Business Understanding
+
+### Why This Matters
+
+In a supply chain, keeping the right amount of stock is a balancing act. If you hold too much stock, you waste money and warehouse space. If you hold too little, you run out of items and disappoint customers. I am analyzing this data to find out where our inventory is struggling.
+
+### Core Business Questions
+
+1.  Which specific warehouse zones are running low on stock most often?
+2.  Does how fast an item sells (daily demand) predict where its safety reorder point is set?
+
+### Expected Relationships
+
+I expect that items with higher daily demand will naturally have higher reorder points, because fast-moving items need a bigger safety cushion so they don't run out.
+
+------------------------------------------------------------------------
+
+# Section 2: Data Understanding & Preparation
+
+### Checking the Data Structure
+
+Before doing any analysis, I used `glimpse()` to check how large the dataset is and look at the variable types.
+
+```{r data-structure}
+glimpse(logistics)
+```
+
+The dataset contains exactly **`r nrow(logistics)` rows** and **`r ncol(logistics)` columns**. The columns are a mix of: \* **Text/Characters (`<chr>`)**: Identifying information like `item_id`, `storage_location_id`, `category`, and `zone`. \* **Integers (`<int>`)**: Whole-number counts like `stock_level`, `reorder_point`, and `lead_time_days`. \* **Doubles (`<dbl>`)**: Decimal numbers tracking values like `daily_demand`, `unit_price`, and `turnover_ratio`.
+
+### Cleaning Decisions
+
+- **Missing Values**: I am using `na.rm = TRUE` across my calculations to bypass any blank entries so they don't break my math functions.
+- **Variable Fixes**: My initial look at the data structure showed that `stock_level` and `reorder_point` are already correctly formatted as integers (`<int>`). Therefore, I can safely run my threshold calculations directly without needing to convert text strings into numbers.
+
+------------------------------------------------------------------------
+
+# Section 3: Data Preparation
+
+### 3.1 Demand by Category
+
+I grouped the data by product category to calculate the minimum, average, and maximum daily demand.
+
+```{r demand-table}
+demand_summary <- logistics %>%
+  group_by(category) %>%
+  summarise(
+    `Min Demand`  = min(daily_demand, na.rm = TRUE),
+    `Mean Demand` = mean(daily_demand, na.rm = TRUE),
+    `Max Demand`  = max(daily_demand, na.rm = TRUE)
+  ) %>%
+  rename(Category = category)
+
+knitr::kable(demand_summary, caption = "Summary of daily demand by category.")
+```
+
+### 3.2 Items Needing Reorder by Zone
+
+Next, I created a column to check if an item's current stock is lower than its reorder point. Then, I added up how many items are currently under-stocked in each zone.
+
+```{r stock-risk}
+logistics$under_stocked <- as.numeric(logistics$stock_level) < as.numeric(logistics$reorder_point)
+
+stock_risk_table <- aggregate(under_stocked ~ zone, logistics, FUN = sum)
+names(stock_risk_table) <- c("Zone", "Items Needing Reorder")
+
+knitr::kable(stock_risk_table, caption = "Count of under-stocked items in each zone.")
+```
+
+------------------------------------------------------------------------
+
+# Section 4: Data Modeling
+
+### 4.1 Daily Demand Histograms
+
+These charts show how spread out our daily demand volume is across the entire company, and then broken down by specific product categories.
+
+```{r daily-demand-plots, message=FALSE, warning=FALSE, results='hide'}
+daily_demand_hist <- ggplot(logistics, aes(x = `daily_demand`)) +
+  geom_histogram(bins = 15, fill = "skyblue", color = "black") +
+  labs(title = "Distribution of Daily Demand", x = "Daily Demand Volume", y = "Count of Items")
+
+print(daily_demand_hist)
+
+daily_demand_hist2 <- ggplot(logistics, aes(x = `daily_demand`)) +
+  geom_histogram(bins = 10, fill = "skyblue", color = "black") +
+  facet_wrap(~ category) + 
+  labs(title = "Daily Demand Distribution across Categories", x = "Daily Demand Volume", y = "Count of Items") +
+  theme_classic()
+
+print(daily_demand_hist2)
+
+ggsave("daily_demand_hist2.png")
+ggsave("daily_demand_hist.png", plot = daily_demand_hist, width = 8, height = 5, dpi = 300)
+```
+
+### 4.2 Stock vs. Reorder Point Scatter Plot
+
+In this plot, any dot below the diagonal line represents an item that is under-stocked (colored in red). This lets us see how many items are actively at risk of a stockout.
+
+```{r inventory-risk-plot, message=FALSE, warning=FALSE, results='hide'}
+inventory_risk <- ggplot(logistics, aes(x = reorder_point, y = stock_level, color = under_stocked)) +
+  geom_point(alpha = 0.4, size = 1) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +
+  scale_color_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(title = "Inventory Risk Assessment", x = "Reorder Point", y = "Current Stock", color = "Under Stocked?") +
+  theme_minimal()
+
+print(inventory_risk)
+
+ggsave("inventory_risk.png")
+```
+
+### 4.3 Under-Stocked Items by Zone
+
+This bar chart ranks our warehouse zones from highest to lowest risk based on how many items need to be reordered immediately.
+
+```{r reorder-levels-plot, message=FALSE, warning=FALSE, results='hide'}
+reorder_levels <- ggplot(stock_risk_table, 
+       aes(x = reorder(Zone, -`Items Needing Reorder`), y = `Items Needing Reorder`, fill = Zone)) +                             
+  geom_bar(stat = "identity", show.legend = FALSE) +    
+  labs(x = "Zone", y = "Items Needing Reorder") +                                    
+  theme_classic()
+
+print(reorder_levels)
+
+ggsave("reorder_levels.png")
+```
+
+------------------------------------------------------------------------
+
+# Section 5: Evaluation
+
+I ran a Pearson correlation test to mathematically prove whether daily demand patterns match up with where our reorder safety buffers are placed.
+
+```{r correlation-analysis}
+correlation_results <- cor.test(logistics$reorder_point, logistics$daily_demand)
+print(correlation_results)
+```
+
+### What the Statistical Output Means:
+
+- **Direction:** The correlation is **-0.0139**, which means there is a very slight negative trend, though it is practically zero.
+- **Magnitude:** The relationship is extremely **weak**. A correlation near zero means the two variables don't really move together at all.
+- **Statistical Significance:** The p-value is **0.4321**. Because this is much larger than 0.05, the result is **not statistically significant**. The analysis found no statistically significant evidence that daily demand influences the reorder points in this dataset.
+- **My Conclusion:** This was surprising! My initial guess was wrong. The findings suggest that reorder points may be influenced by factors other than daily demand, such as supplier lead times, service-level targets, or historical inventory policies. These findings suggest that current reorder point practices may not be adequately aligned with observed demand patterns, which could contribute to inventory inefficiencies and increase the risk of stockouts.
+- **Assumptions:** This test assumes our continuous data is linear and follows a normal, bell-curved distribution.
+
+## Linear Regression Analysis
+
+```{r regression-analysis, echo=FALSE, fig.height=5, fig.width=7, message=FALSE, warning=FALSE}
+# Fit the regression model
+regression_model <- lm(reorder_point ~ daily_demand,
+                       data = logistics)
+
+# Display regression results
+summary(regression_model)
+
+# Create regression plot
+ggplot(logistics, aes(x = daily_demand, y = reorder_point)) +
+  geom_point(color = "steelblue", alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(
+    title = "Linear Regression of Daily Demand and Reorder Point",
+    subtitle = "Relationship between daily demand and inventory reorder thresholds",
+    x = "Daily Demand",
+    y = "Reorder Point"
+  ) +
+  theme_minimal()
+```
+
+A simple linear regression was performed to determine whether daily demand predicts reorder point values. The results were consistent with the correlation analysis, indicating that daily demand was not a statistically significant predictor of reorder points in this dataset. This suggests that reorder decisions may be influenced by additional operational factors such as supplier lead times, inventory policies, or service-level requirements rather than daily demand alone.
+
+The regression coefficient for daily demand was not statistically significant (p > 0.05), indicating that changes in daily demand do not meaningfully predict reorder points in this dataset. The fitted regression line is nearly flat, reinforcing the weak relationship observed in the Pearson correlation analysis.
+
+# Section 6: Deployment & Recommendations
+
+## Business Recommendations
+
+- Review reorder point calculations since they do not appear to reflect actual demand patterns.
+- Prioritize replenishment in warehouse zones with the highest number of under-stocked items.
+- Develop demand-based inventory policies rather than relying on static reorder thresholds.
+- Continue monitoring inventory through dashboards generated from these summary tables and visualizations.
+
+## Limitations
+
+- The dataset represents one snapshot in time
+- Seasonal demand was not included
+- Supplier lead times may affect reorder decisions
+- Customer purchasing behavior may change over time
+
+## Future Work
+
+- Forecast future demand
+- Build predictive inventory models
+- Analyze supplier performance
+- Incorporate lead-time variability
+
+# Ethical Considerations
+
+## Ethical Considerations
+
+This analysis was conducted using operational logistics data rather than personal customer information, reducing privacy concerns. However, business decisions based on these findings should be made cautiously because the dataset represents a limited snapshot of warehouse operations and may not capture seasonal demand, supplier disruptions, or other external factors. Relying solely on historical inventory data without considering operational expertise could lead to inefficient inventory decisions. Organizations should also ensure that inventory policies are applied consistently across warehouse locations and that analytical models are regularly reviewed and updated to reflect changing business conditions.
